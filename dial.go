@@ -36,7 +36,24 @@ func (c *dconn) Read(b []byte) (int, error) {
 }
 
 func (c *dconn) Write(b []byte) (int, error) {
-	return c.src.Write(b)
+	var n int
+	ps, _ := dataIntoPackets(0, b)
+	msg := make([]byte, maxPacketSize)
+	for _, p := range ps {
+		packetSize, err := p.encode(msg)
+		if err != nil {
+			panic(err)
+		}
+		written, err := c.src.Write(msg[:packetSize])
+		if err != nil {
+			return 0, fmt.Errorf("failed to write to main connection: %w", err)
+		}
+		if written != packetSize {
+			return 0, ErrPacketCorrupted
+		}
+		n += len(p.data)
+	}
+	return n, nil
 }
 
 func (c *dconn) Close() error {
@@ -68,12 +85,15 @@ func (c *dconn) SetWriteDeadline(t time.Time) error {
 
 func (c *dconn) read() {
 	for {
-		buf := make([]byte, 1024)
+		buf := make([]byte, maxPacketSize)
 		n, err := c.src.Read(buf)
 		if err != nil {
 			c.bufr.close(fmt.Errorf("failed to read from connection: %w", err))
 			return // TODO: maybe another logic
 		}
-		c.bufr.write(buf[:n])
+
+		p, _ := decodePacket(buf[:n])
+
+		c.bufr.write(p.data)
 	}
 }

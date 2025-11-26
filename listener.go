@@ -63,13 +63,15 @@ func (l *listener) Addr() net.Addr {
 
 func (l *listener) listen() {
 	for {
-		buf := make([]byte, 1024)
+		buf := make([]byte, maxPacketSize)
 		n, addr, err := l.src.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			l.rerr.Store(fmt.Errorf("failed to read from main connection: %w", err))
 			l.newConnsClosed.Store(true)
 			return // TODO: maybe another logic
 		}
+
+		p, _ := decodePacket(buf[:n])
 
 		l.connsMu.RLock()
 		connBuf, ok := l.conns[addr]
@@ -81,7 +83,7 @@ func (l *listener) listen() {
 
 			connBuf = newBuf
 		}
-		connBuf.write(buf[:n])
+		connBuf.write(p.data)
 		l.connsMu.RUnlock()
 	}
 }
@@ -153,9 +155,22 @@ func (c *lconn) Write(b []byte) (int, error) {
 		return 0, werr.(error)
 	}
 
-	n, err := c.w.WriteToUDPAddrPort(b, c.addr)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write to main connection: %w", err)
+	var n int
+	ps, _ := dataIntoPackets(0, b)
+	msg := make([]byte, maxPacketSize)
+	for _, p := range ps {
+		packetSize, err := p.encode(msg)
+		if err != nil {
+			panic(err)
+		}
+		written, err := c.w.WriteToUDPAddrPort(msg[:packetSize], c.addr)
+		if err != nil {
+			return 0, fmt.Errorf("failed to write to main connection: %w", err)
+		}
+		if written != packetSize {
+			return 0, ErrPacketCorrupted
+		}
+		n += len(p.data)
 	}
 	return n, nil
 }
