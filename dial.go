@@ -3,6 +3,7 @@ package sudp
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 )
@@ -18,54 +19,38 @@ func Dial(network, address string) (net.Conn, error) {
 		return nil, fmt.Errorf("failed to dial: %w", err)
 	}
 
-	conn := &dconn{
-		src:  src,
-		bufr: newBufQueue(),
-	}
-	go conn.read()
-	return conn, nil
+	readCh := make(chan []byte, readConnChSize)
+	readErr := new(error)
+	go func(ch chan []byte, err *error, src io.Reader) {
+		for {
+			buf := make([]byte, maxPacketSize)
+			n, rerr := src.Read(buf)
+			if err != nil {
+				*err = rerr
+				close(ch)
+				return
+			}
+			ch <- buf[:n]
+		}
+	}(readCh, readErr, src)
+	conn := newConn(readCh, readErr, src, nil)
+	return &dconn{
+		conn:    conn,
+		addrSrc: src,
+	}, nil
 }
 
 type dconn struct {
-	src  net.Conn
-	bufr *bufQueue
-}
-
-func (c *dconn) Read(b []byte) (int, error) {
-	return c.bufr.read(b)
-}
-
-func (c *dconn) Write(b []byte) (int, error) {
-	var n int
-	ps, _ := dataIntoPackets(0, b)
-	msg := make([]byte, maxPacketSize)
-	for _, p := range ps {
-		packetSize, err := p.encode(msg)
-		if err != nil {
-			panic(err)
-		}
-		written, err := c.src.Write(msg[:packetSize])
-		if err != nil {
-			return 0, fmt.Errorf("failed to write to main connection: %w", err)
-		}
-		if written != packetSize {
-			return 0, ErrPacketCorrupted
-		}
-		n += len(p.data)
-	}
-	return n, nil
-}
-
-func (c *dconn) Close() error {
-	return c.src.Close()
+	*conn
+	addrSrc net.Conn
 }
 
 func (c *dconn) LocalAddr() net.Addr {
-	return c.src.LocalAddr()
+	return c.addrSrc.LocalAddr()
 }
 
 func (c *dconn) RemoteAddr() net.Addr {
-	return c.src.RemoteAddr()
+	return c.addrSrc.RemoteAddr()
 }
 
 // For now SUDP doesn't support deadline
@@ -81,19 +66,4 @@ func (c *dconn) SetReadDeadline(t time.Time) error {
 // For now SUDP doesn't support deadline
 func (c *dconn) SetWriteDeadline(t time.Time) error {
 	return fmt.Errorf("%w: temporarily not implemented", errors.ErrUnsupported)
-}
-
-func (c *dconn) read() {
-	for {
-		buf := make([]byte, maxPacketSize)
-		n, err := c.src.Read(buf)
-		if err != nil {
-			c.bufr.close(fmt.Errorf("failed to read from connection: %w", err))
-			return // TODO: maybe another logic
-		}
-
-		p, _ := decodePacket(buf[:n])
-
-		c.bufr.write(p.data)
-	}
 }

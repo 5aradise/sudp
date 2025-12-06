@@ -25,7 +25,7 @@ func Listen(network, address string) (net.Listener, error) {
 	l := &listener{
 		src:      conn,
 		newConns: make(chan net.Conn, newConnBufSize),
-		conns:    make(map[netip.AddrPort]writeOnlyQueue),
+		conns:    make(map[netip.AddrPort]chan<- []byte),
 	}
 	go l.listen()
 	return l, nil
@@ -37,7 +37,7 @@ type listener struct {
 	newConnsClosed atomic.Bool
 	newConns       chan net.Conn
 	connsMu        sync.RWMutex
-	conns          map[netip.AddrPort]writeOnlyQueue
+	conns          map[netip.AddrPort]chan<- []byte
 }
 
 func (l *listener) Accept() (net.Conn, error) {
@@ -62,28 +62,32 @@ func (l *listener) Addr() net.Addr {
 }
 
 func (l *listener) listen() {
+	readErr := new(error)
 	for {
 		buf := make([]byte, maxPacketSize)
 		n, addr, err := l.src.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			l.rerr.Store(fmt.Errorf("failed to read from main connection: %w", err))
 			l.newConnsClosed.Store(true)
-			return // TODO: maybe another logic
+			*readErr = err
+			for _, conn := range l.conns {
+				close(conn)
+			}
+			l.src.Close()
+			return
 		}
 
-		p, _ := decodePacket(buf[:n])
-
 		l.connsMu.RLock()
-		connBuf, ok := l.conns[addr]
+		connCh, ok := l.conns[addr]
 		if !ok {
-			newBuf := l.lockedNewConn(addr)
-			if newBuf == nil {
+			newCh := l.lockedNewConn(addr, readErr)
+			if newCh == nil {
 				continue
 			}
 
-			connBuf = newBuf
+			connCh = newCh
 		}
-		connBuf.write(p.data)
+		connCh <- buf[:n]
 		l.connsMu.RUnlock()
 	}
 }
@@ -110,82 +114,43 @@ func (l *listener) tryCloseSrc() error {
 	return nil
 }
 
-func (l *listener) lockedNewConn(addr netip.AddrPort) writeOnlyQueue {
-	bufr := newBufQueue()
-	conn := &lconn{
-		addr: addr,
-		r:    bufr,
-		w:    l.src,
-		outClose: func() error {
-			l.connsMu.Lock()
-			delete(l.conns, addr)
-			l.connsMu.Unlock()
-			return l.tryCloseSrc()
-		},
+type connWriter struct {
+	addr netip.AddrPort
+	srv  *net.UDPConn
+}
+
+func (w connWriter) Write(b []byte) (int, error) {
+	return w.srv.WriteToUDPAddrPort(b, w.addr)
+}
+
+func (l *listener) onConnCLose(addr netip.AddrPort) func() error {
+	return func() error {
+		l.connsMu.Lock()
+		close(l.conns[addr])
+		delete(l.conns, addr)
+		l.connsMu.Unlock()
+		return l.tryCloseSrc()
 	}
+}
+
+func (l *listener) lockedNewConn(addr netip.AddrPort, readErr *error) chan<- []byte {
+	readCh := make(chan []byte, readConnChSize)
+
+	conn := newConn(readCh, readErr, connWriter{addr: addr, srv: l.src}, l.onConnCLose(addr))
 
 	if l.newConnsClosed.Load() {
 		close(l.newConns)
 		return nil
 	}
-	l.conns[addr] = bufr
-	l.newConns <- conn
+	l.conns[addr] = readCh
+	l.newConns <- &lconn{conn: conn, addr: addr}
 
-	return bufr
+	return readCh
 }
 
 type lconn struct {
-	addr     netip.AddrPort
-	r        *bufQueue
-	w        udpWriter
-	werr     atomic.Value
-	outClose func() error
-}
-
-type udpWriter interface {
-	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
-}
-
-func (l *lconn) Read(b []byte) (int, error) {
-	return l.r.read(b)
-}
-
-func (c *lconn) Write(b []byte) (int, error) {
-	if werr := c.werr.Load(); werr != nil {
-		return 0, werr.(error)
-	}
-
-	var n int
-	ps, _ := dataIntoPackets(0, b)
-	msg := make([]byte, maxPacketSize)
-	for _, p := range ps {
-		packetSize, err := p.encode(msg)
-		if err != nil {
-			panic(err)
-		}
-		written, err := c.w.WriteToUDPAddrPort(msg[:packetSize], c.addr)
-		if err != nil {
-			return 0, fmt.Errorf("failed to write to main connection: %w", err)
-		}
-		if written != packetSize {
-			return 0, ErrPacketCorrupted
-		}
-		n += len(p.data)
-	}
-	return n, nil
-}
-
-func (c *lconn) Close() error {
-	if c.werr.Load() != nil { // already closed
-		return nil
-	}
-	err := c.outClose()
-
-	rwerr := fmt.Errorf("%w: close function called", net.ErrClosed)
-	c.werr.Store(rwerr)
-	c.r.close(rwerr)
-
-	return err
+	*conn
+	addr netip.AddrPort
 }
 
 func (c *lconn) LocalAddr() net.Addr {
