@@ -21,19 +21,8 @@ func Dial(network, address string) (net.Conn, error) {
 
 	readCh := make(chan []byte, readConnChSize)
 	readErr := new(error)
-	go func(ch chan []byte, err *error, src io.Reader) {
-		for {
-			buf := make([]byte, maxPacketSize)
-			n, rerr := src.Read(buf)
-			if err != nil {
-				*err = rerr
-				close(ch)
-				return
-			}
-			ch <- buf[:n]
-		}
-	}(readCh, readErr, src)
-	conn := newConn(readCh, readErr, src, nil)
+	go readToCh(readCh, readErr, src)
+	conn := newConn(readCh, readErr, src, src.Close)
 	return &dconn{
 		conn:    conn,
 		addrSrc: src,
@@ -66,4 +55,17 @@ func (c *dconn) SetReadDeadline(t time.Time) error {
 // For now SUDP doesn't support deadline
 func (c *dconn) SetWriteDeadline(t time.Time) error {
 	return fmt.Errorf("%w: temporarily not implemented", errors.ErrUnsupported)
+}
+
+func readToCh(dst chan []byte, dstErr *error, src io.Reader) {
+	for {
+		buf := make([]byte, maxPacketSize)
+		n, rerr := src.Read(buf)
+		if rerr != nil {
+			*dstErr = rerr
+			close(dst)
+			return
+		}
+		dst <- buf[:n]
+	}
 }

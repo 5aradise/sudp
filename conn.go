@@ -15,9 +15,10 @@ var (
 	errCloseFuncCalled = fmt.Errorf("%w: close function called", net.ErrClosed)
 )
 
-func newConn(in <-chan []byte, inerr *error, out io.Writer, close func() error) *conn {
-	if close == nil {
-		close = func() error { return nil }
+// inerr - reading error from main connection (should be set before closing r channel)
+func newConn(in <-chan []byte, inerr *error, out io.Writer, onClose func() error) *conn {
+	if onClose == nil {
+		onClose = func() error { return nil }
 	}
 	c := &conn{
 		toRead:  newBufQueue(),
@@ -27,7 +28,7 @@ func newConn(in <-chan []byte, inerr *error, out io.Writer, close func() error) 
 			rerr  *error
 			w     io.Writer
 			close func() error
-		}{in, inerr, out, close},
+		}{in, inerr, out, onClose},
 	}
 	go c.run()
 	return c
@@ -45,7 +46,7 @@ type conn struct {
 	closeErr atomic.Value
 	out      struct {
 		r    <-chan []byte
-		rerr *error // error from main connection
+		rerr *error // will be set after close r channel
 
 		w io.Writer
 
@@ -107,10 +108,12 @@ func (c *conn) Close() error {
 }
 
 func (c *conn) closeWithError(err error) error {
-	if c.closeErr.Load() != nil { // already closed
-		return nil
-	}
+	prevErr := c.closeErr.Load()
+
 	c.closeErr.Store(err)
 
-	return c.out.close()
+	if prevErr == nil { // first call
+		return c.out.close()
+	}
+	return nil
 }

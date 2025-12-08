@@ -47,7 +47,7 @@ func (l *listener) Accept() (net.Conn, error) {
 		if rerr := l.rerr.Load(); rerr != nil {
 			return nil, rerr.(error)
 		}
-		return nil, fmt.Errorf("%w: close function called", net.ErrClosed)
+		return nil, errCloseFuncCalled
 	}
 	return newConn, nil
 }
@@ -69,10 +69,15 @@ func (l *listener) listen() {
 		if err != nil {
 			l.rerr.Store(fmt.Errorf("failed to read from main connection: %w", err))
 			l.newConnsClosed.Store(true)
+
 			*readErr = err
+			l.connsMu.Lock()
 			for _, conn := range l.conns {
 				close(conn)
 			}
+			clear(l.conns)
+			l.connsMu.Unlock()
+
 			l.src.Close()
 			return
 		}

@@ -13,13 +13,6 @@ func newBufQueue() *bufQueue {
 	}
 }
 
-type writeOnlyQueue interface {
-	write([]byte)
-	close(error)
-}
-
-var _ writeOnlyQueue = &bufQueue{} // implements writeOnlyQueue
-
 type bufQueue struct {
 	ch  chan []byte
 	err atomic.Value // to stop reading error should be set and channel closed
