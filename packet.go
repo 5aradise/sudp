@@ -89,14 +89,9 @@ func closeConnectionPacket(number uint32) packet {
 // if received packets are 0, 1, 2, 3, 5, 7, 8, 11, 12
 //
 // ranges are 0-3, 5-5, 7-8, 11-12
-//
-// so input must be [0, 3, 5, 5, 7, 8, 11, 12]
-func receivedPacketsPacket(number uint32, receivedPackets ...uint32) packet {
+func receivedPacketsPacket(number uint32, receivedPackets []rng[uint32]) packet {
 	if number > maxPacketNumber {
 		panic("uint20 overflow")
-	}
-	if len(receivedPackets)%2 != 0 {
-		panic("received packets must be described by ranges")
 	}
 
 	return packet{
@@ -108,18 +103,17 @@ func receivedPacketsPacket(number uint32, receivedPackets ...uint32) packet {
 		data: encodeReceivedPackets(receivedPackets),
 	}
 }
-func encodeReceivedPackets(receivedPackets []uint32) []byte {
-	dataSize := 1 + len(receivedPackets)/2*5
+func encodeReceivedPackets(receivedPackets []rng[uint32]) []byte {
+	dataSize := 1 + len(receivedPackets)*5
 	if dataSize > maxDataSize {
 		panic("data size overflow")
 	}
 
-	data := make([]byte, 1+len(receivedPackets)/2*5)
+	data := make([]byte, 1+len(receivedPackets)*5)
 	data[0] = receivedPacketsFlag
-	for i := 0; i < len(receivedPackets)/2; i += 1 {
+	for i, rng := range receivedPackets {
 		dataI := i*5 + 1
-		numI := i * 2
-		n1, n2 := receivedPackets[numI], receivedPackets[numI+1]
+		n1, n2 := rng[0], rng[1]
 		if n1 > maxPacketNumber || n2 > maxPacketNumber {
 			panic("uint20 overflow")
 		}
@@ -132,23 +126,23 @@ func encodeReceivedPackets(receivedPackets []uint32) []byte {
 	return data
 }
 
-func decodeReceivedPackets(payload []byte) ([]uint32, error) {
+func decodeReceivedPackets(payload []byte) ([]rng[uint32], error) {
 	if len(payload)%5 != 0 {
 		return nil, errInvalidRangeFormat
 	}
 
-	ranges := make([]uint32, 0, len(payload)/5*2)
+	ranges := make([]rng[uint32], 0, len(payload)/5*2)
 	for i := 0; i < len(payload); i += 5 {
 		n1 := uint32(payload[i])<<12 | uint32(payload[i+1])<<4 | uint32(payload[i+2])>>4
 		n2 := uint32(payload[i+2]&0b00001111)<<16 | uint32(payload[i+3])<<8 | uint32(payload[i+4])
-		ranges = append(ranges, n1, n2)
+		ranges = append(ranges, rng[uint32]{n1, n2})
 	}
 	return ranges, nil
 }
 
 // data packets
 
-func dataIntoPackets(initPacketNumber uint32, data []byte) (packets []packet, lastPacket uint32) {
+func dataIntoPackets(initPacketNumber uint32, data []byte) (packets []packet, nextPacket uint32) {
 	newPackets := len(data)/maxDataSize + 1
 	if initPacketNumber+uint32(newPackets)-1 > maxPacketNumber {
 		panic("uint20 overflow")
@@ -165,7 +159,7 @@ func dataIntoPackets(initPacketNumber uint32, data []byte) (packets []packet, la
 	p := dataPacket(next, data)
 	next++
 	ps = append(ps, p)
-	return ps, next - 1
+	return ps, next
 }
 func dataPacket(number uint32, data []byte) packet {
 	if len(data) > maxDataSize {
@@ -206,7 +200,7 @@ func decodeHeader(src []byte) header {
 // encoding
 
 func (p packet) encode(dst []byte) (int, error) {
-	if len(dst) < headerSize+len(p.data) {
+	if len(dst) < p.len() {
 		return 0, errTooSmallBuffer
 	}
 
@@ -223,4 +217,8 @@ func (h header) encode(dst []byte) {
 	dst[0] |= byte(h.number>>16) & 0b00001111
 	dst[1] = byte(h.number >> 8)
 	dst[2] = byte(h.number)
+}
+
+func (p packet) len() int {
+	return headerSize + len(p.data)
 }

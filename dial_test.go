@@ -1,6 +1,7 @@
 package sudp
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"testing"
@@ -103,14 +104,17 @@ func periodicalServerMsg(assert *assert.Assertions, msg []byte, tickCount int, t
 		for {
 			conn, err := l.Accept()
 			assert.NoError(err)
-			go func() {
+			go func(conn net.Conn, msg []byte) {
 				for range tickCount {
-					_, err = conn.Write(msg)
-					assert.NoError(err)
+					_, err := conn.Write(msg)
+					if err != nil {
+						assert.ErrorIs(err, net.ErrClosed)
+						return
+					}
 
 					time.Sleep(tick)
 				}
-			}()
+			}(conn, bytes.Clone(msg))
 		}
 	}()
 

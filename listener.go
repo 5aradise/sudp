@@ -131,7 +131,7 @@ func (w connWriter) Write(b []byte) (int, error) {
 func (l *listener) onConnCLose(addr netip.AddrPort) func() error {
 	return func() error {
 		l.connsMu.Lock()
-		close(l.conns[addr])
+		l.conns[addr] <- nil
 		delete(l.conns, addr)
 		l.connsMu.Unlock()
 		return l.tryCloseSrc()
