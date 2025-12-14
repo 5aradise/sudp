@@ -275,14 +275,15 @@ func TestGroup_Resending(t *testing.T) {
 		assert.True(ok)
 		assert.NoError(err)
 
-		time.Sleep(sShortTime * 15)
+		time.Sleep(sShortTime * 9)
 
 		sendedMu.Lock()
 		*sended = []rng[uint32]{{33, 46}}
 		sendedMu.Unlock()
 
-		time.Sleep(sShortTime * 3)
+		time.Sleep(sShortTime * 9)
 
+		assert.Len(ps.Packets(), 10)
 		assert.False(closedConn.Load())
 	})
 }
