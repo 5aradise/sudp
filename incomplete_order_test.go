@@ -64,6 +64,43 @@ func TestIncompleteOrder(t *testing.T) {
 	// readed: [0, 1, 2, 3, 4, 5, 6, 7, 8]	incomplete: []
 }
 
+func TestIncompleteOrder_CommandPacket(t *testing.T) {
+	pack := func(num uint32) packet {
+		return packet{
+			header: header{
+				number: num,
+			},
+			data: []byte{byte(num)},
+		}
+	}
+	commandPack := func(num uint32) packet {
+		return packet{
+			header: header{
+				isCommand: true,
+				number:    num,
+			},
+			data: []byte{byte(num)},
+		}
+	}
+	assert := assert.New(t)
+
+	io := incompleteOrder{}
+	io.append(pack(1))
+	io.append(pack(2))
+	io.append(commandPack(3))
+	io.append(pack(4))
+	io.append(pack(5))
+	io.append(commandPack(6))
+	io.append(commandPack(7))
+
+	expectedPacketNums := []byte{1, 2, 4, 5}
+	var actualPacketNums []byte
+	for p := range io.append(commandPack(0)) {
+		actualPacketNums = append(actualPacketNums, p...)
+	}
+	assert.Equal(expectedPacketNums, actualPacketNums)
+}
+
 func TestBinaryInsert(t *testing.T) {
 	pack := func(num uint32) packet {
 		return packet{

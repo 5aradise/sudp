@@ -22,7 +22,10 @@ func Dial(network, address string) (net.Conn, error) {
 	readCh := make(chan []byte, readConnChSize)
 	readErr := new(error)
 	go readToCh(readCh, readErr, src)
-	conn := newConn(readCh, readErr, src, src.Close)
+	conn := newConn(readCh, readErr, src, func() error {
+		readCh <- nil
+		return src.Close()
+	})
 	return &dconn{
 		conn:    conn,
 		addrSrc: src,

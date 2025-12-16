@@ -27,6 +27,7 @@ func TestListener_Accept(t *testing.T) {
 		l, err := Listen("udp", "127.0.0.1:0")
 		assert.NoError(err)
 		var connCount atomic.Int64
+		var wg sync.WaitGroup
 
 		go periodicalClientMsg(assert, l.Addr().String(), []byte{1, 2, 3}, 10, 100*time.Millisecond)
 		go periodicalClientMsg(assert, l.Addr().String(), []byte{4, 5, 6}, 10, 100*time.Millisecond)
@@ -35,7 +36,7 @@ func TestListener_Accept(t *testing.T) {
 			conn, err := l.Accept()
 			assert.NoError(err)
 
-			go func() {
+			wg.Go(func() {
 				defer func() {
 					assert.NoError(conn.Close())
 				}()
@@ -46,15 +47,16 @@ func TestListener_Accept(t *testing.T) {
 
 				connCount.Add(1)
 
-				for {
+				for range 9 {
 					_, err = conn.Read(buf)
 					assert.NoError(err)
 				}
-			}()
+			})
 		}
 
 		time.Sleep(300 * time.Millisecond)
 		assert.Equal(3, int(connCount.Load()))
+		wg.Wait()
 	})
 }
 
@@ -89,16 +91,15 @@ func TestListener_Close(t *testing.T) {
 		var lstnClosedMu sync.Mutex
 		lstnClosedCond := sync.NewCond(&lstnClosedMu)
 		var lstnClosed bool
-		var connsWg sync.WaitGroup
+		var wg sync.WaitGroup
 
 		go periodicalClientMsg(assert, l.Addr().String(), []byte{1, 2, 3}, 10, 100*time.Millisecond)
 		go periodicalClientMsg(assert, l.Addr().String(), []byte{4, 5, 6}, 10, 100*time.Millisecond)
 		go periodicalClientMsg(assert, l.Addr().String(), []byte{7, 8, 9}, 10, 100*time.Millisecond)
-		connsWg.Add(3)
 		for range 3 {
 			conn, err := l.Accept()
 			assert.NoError(err)
-			go func() {
+			wg.Go(func() {
 				defer func() {
 					assert.NoError(conn.Close())
 				}()
@@ -112,16 +113,13 @@ func TestListener_Close(t *testing.T) {
 				}
 				lstnClosedMu.Unlock()
 
-				_, err = conn.Read(buf)
-				assert.NoError(err)
 				_, err = conn.Write([]byte{10, 11, 12})
 				assert.NoError(err)
-				connsWg.Done()
-				for {
+				for range 9 {
 					_, err = conn.Read(buf)
 					assert.NoError(err)
 				}
-			}()
+			})
 		}
 		err = l.Close()
 		assert.NoError(err)
@@ -129,7 +127,7 @@ func TestListener_Close(t *testing.T) {
 		lstnClosed = true
 		lstnClosedMu.Unlock()
 		lstnClosedCond.Broadcast()
-		connsWg.Wait()
+		wg.Wait()
 	})
 
 	t.Run("Twice close shouldn't return error", func(t *testing.T) {

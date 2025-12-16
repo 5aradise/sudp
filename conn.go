@@ -24,11 +24,19 @@ var (
 	errNoResponse      = fmt.Errorf("%w: no response", net.ErrClosed)
 )
 
+// Errors:
 // An error in reading and writing may occur for two reasons related to the connection:
 // 1. It is closed (both directions must be notified at once)
 // 2. Problems with the external main connection
 // (the error will appear when attempting to interact with the external connection,
 // so there is no need to notify the other direction)
+
+// Packet number tracking:
+// The problem is that our protocol does not need to track the numbers of received and 
+// sent packets at least for now, because they do not need to be resent and checked for delivery. 
+// Moreover, when they are present, if the number of a packet is missing, 
+// we cannot read the next received packets, because we cannot be sure that the packet 
+// that was not received is a letter of received packets.
 type conn struct {
 	out struct {
 		r    <-chan []byte
@@ -39,7 +47,8 @@ type conn struct {
 		close func() error
 	}
 
-	closeErr atomic.Value // should be specified before closing other components
+	internalErr atomic.Bool
+	closeErr    atomic.Value // should be specified before closing other components
 
 	// write
 	stopGroups    chan struct{}
@@ -56,8 +65,8 @@ type conn struct {
 	short      *time.Timer
 	long       *time.Timer
 	receivedMu sync.RWMutex
+	nextRecivP uint32
 	received   []rng[uint32]
-	unreadedMu sync.Mutex
 	unreaded   incompleteOrder
 }
 
@@ -87,9 +96,14 @@ func newConn(in <-chan []byte, inerr *error, out io.Writer, onClose func() error
 	c.long.Stop()
 	go func() {
 		err := c.run()
-		if c.closeErr.Load() == nil {
-			c.toRead.close(err)
-			c.close(fmt.Errorf("running the connection: %w", err))
+		if err != nil {
+			if !c.internalErr.Load() {
+				c.toRead.close(err)
+			}
+
+			c.close(fmt.Errorf("running the connection: %w", err), false)
+		} else {
+			c.toRead.close(c.closeErr.Load().(error))
 		}
 	}()
 	return c
@@ -108,26 +122,26 @@ func (c *conn) Write(b []byte) (int, error) {
 		return 0, clErr.(error)
 	}
 
-	ok, n, err := c.group().appendAndSendData(b)
+	ok, n, err := c.group().appendAndSend(b)
 	if !ok {
-		_, n, err = c.nextGroup().appendAndSendData(b)
+		_, n, err = c.nextGroup().appendAndSend(b)
 	}
 	if err != nil {
-		c.close(fmt.Errorf("writing: %w", err))
+		c.close(fmt.Errorf("writing: %w", err), false)
 	}
 	return n, err
 }
 
 func (c *conn) Close() error {
-	return c.close(errCloseFuncCalled)
+	return c.close(errCloseFuncCalled, true)
 }
 
 // reading
 
 func (c *conn) run() error {
 	for {
-		data, rerr := <-c.out.r
-		if !rerr { // external connection error
+		data, internalErr := <-c.out.r
+		if !internalErr { // external connection error
 			return fmt.Errorf("failed to read from main connection: %w", *c.out.rerr)
 		}
 		if data == nil { // internal connection closed
@@ -138,43 +152,53 @@ func (c *conn) run() error {
 		if err != nil {
 			return fmt.Errorf("invalid packet: %w", err)
 		}
-
-		if !c.addToReceived(p.number) {
-			err := c.sendReceivedPackets()
+		var (
+			command command = -1
+			payload []byte
+		)
+		if p.isCommand {
+			command, payload, err = commandPacketType(p)
 			if err != nil {
-				return fmt.Errorf("failed to send received packets: %w", err)
+				return err
 			}
-			continue
+		}
+
+		if command != commandReceivedPackets {
+			if !c.addToReceived(p.number) {
+				err := c.sendReceivedPackets()
+				if err != nil {
+					return fmt.Errorf("failed to send received packets: %w", err)
+				}
+				continue
+			}
 		}
 
 		if p.isCommand {
-			err := c.handleCommand(p)
+			err := c.handleCommand(p.number, command, payload)
 			if err != nil {
 				return fmt.Errorf("failed to handle command: %w", err)
 			}
-			continue
 		}
 
-		c.processDataPacket(p)
+		if command != commandReceivedPackets {
+			for toRead := range c.unreaded.append(p) {
+				c.toRead.write(toRead)
+			}
+		}
 	}
 }
 
-func (c *conn) handleCommand(p packet) error {
-	command, payload, err := commandPacketType(p)
-	if err != nil {
-		return err
-	}
-
+func (c *conn) handleCommand(number uint32, command command, payload []byte) error {
 	switch command {
 	case commandCloseConn:
-		outErr := c.closeLocaly(errRemotelyClosed)
+		outErr := c.closeLocaly(errRemotelyClosed, false)
 		return outErr
 	case commandReceivedPackets:
 		sended, err := decodeReceivedPackets(payload)
 		if err != nil {
 			return err
 		}
-		c.markSendedPackets(p.number, sended)
+		c.markSendedPackets(number, sended)
 		return nil
 	default:
 		panic("unknown command") // should never happen
@@ -191,28 +215,17 @@ func (c *conn) markSendedPackets(version uint32, sended []rng[uint32]) {
 	}
 }
 
-func (c *conn) processDataPacket(p packet) {
-	c.unreadedMu.Lock()
-	defer c.unreadedMu.Unlock()
-
-	for toRead := range c.unreaded.append(p) {
-		c.toRead.write(toRead)
-	}
-}
-
 func (c *conn) addToReceived(number uint32) (added bool) {
-	var notReceived bool
 	c.receivedMu.Lock()
-	c.received, notReceived = rangesTryAppend(c.received, number)
+	c.received, added = rangesTryAppend(c.received, number)
 	c.receivedMu.Unlock()
-	if !notReceived {
-		return false
-	}
 
-	if !c.short.Reset(rShortTime) { // one of previous timers was excided, so start new cicle
-		c.long.Reset(rLongTime)
+	if added {
+		if !c.short.Reset(rShortTime) { // one of previous timers was excided, so start new cicle
+			c.long.Reset(rLongTime)
+		}
 	}
-	return true
+	return added
 }
 
 func (c *conn) shortTFunc() {
@@ -233,17 +246,24 @@ func (c *conn) longTFunc() {
 
 // close
 
-func (c *conn) close(why error) error {
+func (c *conn) close(why error, internal bool) error {
 	var sendCloseErr error
 	if c.closeErr.Load() == nil {
 		sendCloseErr = c.sendCloseCommand()
 	}
-	closeLocalErr := c.closeLocaly(why)
+	closeLocalErr := c.closeLocaly(why, internal)
 	return errors.Join(closeLocalErr, sendCloseErr)
 }
 
-func (c *conn) closeLocaly(err error) (outErr error) {
-	if c.closeErr.Swap(err) == nil { // first call
+func (c *conn) closeLocaly(why error, internal bool) (outErr error) {
+	prevErr := c.closeErr.Load()
+	if internal {
+		c.internalErr.Store(true)
+		c.closeErr.Store(why)
+	} else if !c.internalErr.Load() {
+		c.closeErr.Store(why)
+	}
+	if prevErr == nil { // first call
 		close(c.stopGroups)
 		return c.out.close()
 	}
@@ -251,42 +271,31 @@ func (c *conn) closeLocaly(err error) (outErr error) {
 }
 
 func (c *conn) closeOnNoResponse() {
-	c.close(errNoResponse)
+	c.close(errNoResponse, false)
 }
 
 // commands
 
 func (c *conn) sendReceivedPackets() error {
-	if clErr := c.closeErr.Load(); clErr != nil {
-		return clErr.(error)
-	}
-
-	g := c.group()
-	c.receivedMu.RLock()
-	defer c.receivedMu.RUnlock()
-	if c.received == nil {
-		return nil
-	}
-	ok, err := g.appendAndSendReceived(c.received)
-	if !ok {
-		_, err = c.nextGroup().appendAndSendReceived(c.received)
-	}
-	return err
+	c.receivedMu.Lock()
+	p := receivedPacketsPacket(c.nextRecivP, c.received)
+	c.nextRecivP++
+	c.receivedMu.Unlock()
+	return c.sendPacketOutOfGroup(p)
 }
 
 // dont add to any group, because command should be sent only once
 func (c *conn) sendCloseCommand() error {
+	packetNum := c.nextPacketNum()
+	p := closeConnectionPacket(packetNum)
+	return c.sendPacketOutOfGroup(p)
+}
+
+func (c *conn) sendPacketOutOfGroup(p packet) error {
 	if clErr := c.closeErr.Load(); clErr != nil {
 		return clErr.(error)
 	}
 
-	var packetNum uint32
-	c.lastGroupMu.Lock()
-	if c.lastGroup != nil {
-		packetNum = c.lastGroup.nextPacket
-	}
-	c.lastGroupMu.Unlock()
-	p := closeConnectionPacket(packetNum)
 	data := make([]byte, p.len())
 	packetSize, err := p.encode(data)
 	if err != nil { // should never happen
@@ -302,6 +311,16 @@ func (c *conn) sendCloseCommand() error {
 		return ErrPacketCorrupted
 	}
 	return nil
+}
+
+func (c *conn) nextPacketNum() uint32 {
+	c.lastGroupMu.Lock()
+	defer c.lastGroupMu.Unlock()
+
+	if c.lastGroup != nil {
+		return c.lastGroup.incNextPacket()
+	}
+	return 0
 }
 
 // groups

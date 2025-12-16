@@ -20,12 +20,12 @@ func TestGroup_Packets(t *testing.T) {
 		sended := &[]rng[uint32]{{0, 100}}
 		g := newGroup(ps, func() {}, make(chan struct{}), &sync.RWMutex{}, sended, 420)
 
-		ok, n, err := g.appendAndSendData([]byte(strings.Repeat("A", maxDataSize) +
+		ok, n, err := g.appendAndSend([]byte(strings.Repeat("A", maxDataSize) +
 			strings.Repeat("B", maxDataSize) + strings.Repeat("C", maxDataSize/2)))
 		assert.True(ok)
 		assert.Equal(maxDataSize*2+maxDataSize/2, n)
 		assert.NoError(err)
-		ok, n, err = g.appendAndSendData([]byte(strings.Repeat("D", maxDataSize/5)))
+		ok, n, err = g.appendAndSend([]byte(strings.Repeat("D", maxDataSize/5)))
 		assert.True(ok)
 		assert.Equal(maxDataSize/5, n)
 		assert.NoError(err)
@@ -45,39 +45,6 @@ func TestGroup_Packets(t *testing.T) {
 		assert.False(packets[0].isCommand)
 		assert.Equal([]byte(strings.Repeat("D", maxDataSize/5)), packets[3].data)
 	})
-
-	t.Run("Should send right received packets", func(t *testing.T) {
-		assert := assert.New(t)
-		ps := &testPacketBuffer{
-			t: t,
-		}
-		sended := &[]rng[uint32]{{0, 100}}
-		g := newGroup(ps, func() {}, make(chan struct{}), &sync.RWMutex{}, sended, 69)
-
-		ok, err := g.appendAndSendReceived([]rng[uint32]{{0, 4}, {7, 8}, {10, 10}})
-		assert.True(ok)
-		assert.NoError(err)
-		ok, err = g.appendAndSendReceived([]rng[uint32]{{0, 1003}, {2025, 2026}})
-		assert.True(ok)
-		assert.NoError(err)
-
-		packets := ps.Packets()
-		assert.Len(packets, 2)
-		assert.EqualValues(69, packets[0].number)
-		tp, data, err := commandPacketType(packets[0])
-		assert.Equal(commandReceivedPackets, tp)
-		assert.NoError(err)
-		rps, err := decodeReceivedPackets(data)
-		assert.NoError(err)
-		assert.Equal([]rng[uint32]{{0, 4}, {7, 8}, {10, 10}}, rps)
-		assert.EqualValues(70, packets[1].number)
-		tp, data, err = commandPacketType(packets[1])
-		assert.Equal(commandReceivedPackets, tp)
-		assert.NoError(err)
-		rps, err = decodeReceivedPackets(data)
-		assert.NoError(err)
-		assert.Equal([]rng[uint32]{{0, 1003}, {2025, 2026}}, rps)
-	})
 }
 
 func TestGroup_Timers(t *testing.T) {
@@ -90,28 +57,28 @@ func TestGroup_Timers(t *testing.T) {
 		sended := &[]rng[uint32]{{33, 34}, {37, 37}}
 		g := newGroup(ps, func() {}, make(chan struct{}), sendedMu, sended, 33)
 
-		ok, _, err := g.appendAndSendData([]byte("Hello"))
+		ok, _, err := g.appendAndSend([]byte("Hello"))
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte(", World"))
+		ok, _, err = g.appendAndSend([]byte(", World"))
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte("!\n"))
+		ok, _, err = g.appendAndSend([]byte("!\n"))
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte("What is "))
+		ok, _, err = g.appendAndSend([]byte("What is "))
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte("your name?\n"))
+		ok, _, err = g.appendAndSend([]byte("your name?\n"))
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte("My name is 5aradise!\n"))
+		ok, _, err = g.appendAndSend([]byte("My name is 5aradise!\n"))
 		assert.True(ok)
 		assert.NoError(err)
 
 		time.Sleep(sShortTime)
 
-		ok, _, _ = g.appendAndSendData([]byte("smth"))
+		ok, _, _ = g.appendAndSend([]byte("smth"))
 		assert.False(ok, "should be closed for new messages after short timer")
 
 		time.Sleep(time.Millisecond)
@@ -149,14 +116,14 @@ func TestGroup_Timers(t *testing.T) {
 		g := newGroup(ps, func() {}, make(chan struct{}), sendedMu, sended, 33)
 
 		for i := range 8 {
-			ok, _, err := g.appendAndSendData([]byte{byte(i)})
+			ok, _, err := g.appendAndSend([]byte{byte(i)})
 			assert.True(ok)
 			assert.NoError(err)
 
 			time.Sleep(sLongTime / 8)
 		}
 
-		ok, _, _ := g.appendAndSendData([]byte("smth"))
+		ok, _, _ := g.appendAndSend([]byte("smth"))
 		assert.False(ok, "should be closed for new messages after long timer")
 
 		time.Sleep(time.Millisecond)
@@ -191,16 +158,16 @@ func TestGroup_Resending(t *testing.T) {
 		sendedMu := &sync.RWMutex{}
 		sended := &[]rng[uint32]{{34, 35}}
 		g := newGroup(ps, func() {}, make(chan struct{}), sendedMu, sended, 33)
-		ok, _, err := g.appendAndSendData([]byte{0})
+		ok, _, err := g.appendAndSend([]byte{0})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{1})
+		ok, _, err = g.appendAndSend([]byte{1})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{2})
+		ok, _, err = g.appendAndSend([]byte{2})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{3})
+		ok, _, err = g.appendAndSend([]byte{3})
 		assert.True(ok)
 		assert.NoError(err)
 
@@ -233,16 +200,16 @@ func TestGroup_Resending(t *testing.T) {
 		closeConn := func() { closedConn.Store(true) }
 		g := newGroup(ps, closeConn, make(chan struct{}), sendedMu, sended, 33)
 
-		ok, _, err := g.appendAndSendData([]byte{0})
+		ok, _, err := g.appendAndSend([]byte{0})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{1})
+		ok, _, err = g.appendAndSend([]byte{1})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{2})
+		ok, _, err = g.appendAndSend([]byte{2})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{3})
+		ok, _, err = g.appendAndSend([]byte{3})
 		assert.True(ok)
 		assert.NoError(err)
 
@@ -262,16 +229,16 @@ func TestGroup_Resending(t *testing.T) {
 		closeConn := func() { closedConn.Store(true) }
 		g := newGroup(ps, closeConn, make(chan struct{}), sendedMu, sended, 33)
 
-		ok, _, err := g.appendAndSendData([]byte{0})
+		ok, _, err := g.appendAndSend([]byte{0})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{1})
+		ok, _, err = g.appendAndSend([]byte{1})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{2})
+		ok, _, err = g.appendAndSend([]byte{2})
 		assert.True(ok)
 		assert.NoError(err)
-		ok, _, err = g.appendAndSendData([]byte{3})
+		ok, _, err = g.appendAndSend([]byte{3})
 		assert.True(ok)
 		assert.NoError(err)
 
@@ -285,6 +252,41 @@ func TestGroup_Resending(t *testing.T) {
 
 		assert.Len(ps.Packets(), 10)
 		assert.False(closedConn.Load())
+	})
+}
+
+func TestGroup_IncNextPacket(t *testing.T) {
+	t.Run("Incrementin dont affect on packet resending", func(t *testing.T) {
+		assert := assert.New(t)
+		ps := &testPacketBuffer{
+			t: t,
+		}
+		sendedMu := &sync.RWMutex{}
+		sended := &[]rng[uint32]{{33, 34}, {36, 37}}
+		var closedConn atomic.Bool
+		closeConn := func() { closedConn.Store(true) }
+		g := newGroup(ps, closeConn, make(chan struct{}), sendedMu, sended, 33)
+
+		ok, _, err := g.appendAndSend([]byte{0}) // 33
+		assert.True(ok)
+		assert.NoError(err)
+		ok, _, err = g.appendAndSend([]byte{1}) // 34
+		assert.True(ok)
+		assert.NoError(err)
+		nextPacket := g.incNextPacket() // 35 (dont care)
+		assert.EqualValues(35, nextPacket)
+		ok, _, err = g.appendAndSend([]byte{2}) // 36
+		assert.True(ok)
+		assert.NoError(err)
+		ok, _, err = g.appendAndSend([]byte{3}) // 37
+		assert.True(ok)
+		assert.NoError(err)
+		nextPacket = g.incNextPacket() // 38 (dont care)
+		assert.EqualValues(38, nextPacket)
+
+		time.Sleep(sShortTime * 2)
+
+		assert.Len(ps.Packets(), 4)
 	})
 }
 

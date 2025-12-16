@@ -28,7 +28,7 @@ type packet struct {
 type header struct {
 	version   byte   // 3 bits
 	isCommand bool   // 1 bit
-	number    uint32 // uint20
+	number    uint32 // uint20 (not for receivedPackets)
 }
 
 // 1500 (MTU) - 20 (IP header) - 8 (UDP header) = 1472 bytes

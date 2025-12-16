@@ -1,0 +1,37 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: e2e/echo-server/Dockerfile
+    container_name: sudp-server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      DELAY: "30ms"
+      LOSS: "1%"
+      SERVER_ADDRESS: ":8080"
+    command: ["/netem.sh", "/app/server"]
+    networks:
+      - testnet
+
+  client:
+    build:
+      context: ..
+      dockerfile: e2e/simple-client/Dockerfile
+    depends_on:
+      - server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      DELAY: "30ms"
+      LOSS: "1%"
+      SERVER_ADDRESS: "server:8080"
+    command: ["/netem.sh", "/app/client"]
+    networks:
+      - testnet
+    deploy:
+      replicas: 100
+
+networks:
+  testnet:
+    driver: bridge

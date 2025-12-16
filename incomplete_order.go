@@ -18,7 +18,7 @@ func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
 
 	return func(yield func([]byte) bool) {
 		o.nextToRead++
-		if !yield(p.data) {
+		if !yieldDataPacket(yield, p) {
 			return
 		}
 
@@ -30,7 +30,7 @@ func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
 			}
 
 			o.nextToRead++
-			if !yield(p.data) {
+			if !yieldDataPacket(yield, p) {
 				break
 			}
 		}
@@ -38,6 +38,14 @@ func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
 			o.incomplete = slices.Delete(o.incomplete, 0, lri+1)
 		}
 	}
+}
+
+func yieldDataPacket(yield func([]byte) bool, p packet) bool {
+	if p.isCommand {
+		return true
+	}
+
+	return yield(p.data)
 }
 
 func binaryInsert(ps []packet, p packet) []packet {

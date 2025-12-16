@@ -69,45 +69,14 @@ func newGroup(w io.Writer, closeConn func(), stop <-chan struct{}, sendedMu *syn
 }
 
 // ok indicates whether the group can accept new packets
-func (g *group) appendAndSendReceived(receivedPackets []rng[uint32]) (ok bool, err error) {
-	if !g.short.Reset(sShortTime) {
-		return false, nil
-	}
-
+func (g *group) appendAndSend(data []byte) (ok bool, n int, err error) {
 	g.packetsMu.Lock()
 	defer g.packetsMu.Unlock()
 
-	packetNum := g.nextPacket
-
-	p := receivedPacketsPacket(packetNum, receivedPackets)
-	data := make([]byte, p.len())
-	packetSize, err := p.encode(data)
-	if err != nil { // should never happen
-		panic(err)
-	}
-	data = data[:packetSize]
-
-	written, err := g.w.Write(data)
-	if err != nil {
-		return true, fmt.Errorf("failed to write to main connection: %w", err)
-	}
-	if written != packetSize {
-		return true, ErrPacketCorrupted
-	}
-	g.packets = append(g.packets, data)
-
-	g.nextPacket = packetNum + 1
-	return true, nil
-}
-
-// ok indicates whether the group can accept new packets
-func (g *group) appendAndSendData(data []byte) (ok bool, n int, err error) {
 	if !g.short.Reset(sShortTime) {
+		g.short.Stop()
 		return false, 0, nil
 	}
-
-	g.packetsMu.Lock()
-	defer g.packetsMu.Unlock()
 
 	ps, nextPacket := dataIntoPackets(g.nextPacket, data)
 	g.packets = slices.Grow(g.packets, len(ps))
@@ -150,9 +119,7 @@ func (g *group) longTFunc() {
 }
 
 func (g *group) resendUnconfirmed() {
-	var hasUnconfirmed bool
 	resendDelay := sShortTime
-	g.packetsMu.Lock()
 	for range resendTries {
 		select {
 		case <-g.stopCh:
@@ -160,18 +127,20 @@ func (g *group) resendUnconfirmed() {
 		default:
 		}
 
+		var hasUnconfirmed bool
+		g.packetsMu.Lock()
 		g.markSended()
 		for _, p := range g.packets {
-			if p == nil {
-				continue
-			}
-			hasUnconfirmed = true
-			_, err := g.w.Write(p)
-			if err != nil {
-				return
+			if p != nil {
+				hasUnconfirmed = true
+				_, err := g.w.Write(p)
+				if err != nil {
+					g.packetsMu.Unlock()
+					return
+				}
 			}
 		}
-
+		g.packetsMu.Unlock()
 		if !hasUnconfirmed {
 			return
 		}
@@ -180,27 +149,44 @@ func (g *group) resendUnconfirmed() {
 		time.Sleep(resendDelay)
 	}
 
+	g.packetsMu.Lock()
 	g.markSended()
 	for _, p := range g.packets {
 		if p != nil {
+			g.packetsMu.Unlock()
 			g.closeConn()
 			return
 		}
 	}
+	g.packetsMu.Unlock()
 }
 
 func (g *group) markSended() {
+	var (
+		psLen      = len(g.packets)
+		nextPacket = int(g.nextPacket)
+	)
 	g.sendedMu.RLock()
 	for _, r := range *g.sended {
-		s := len(g.packets) - (int(g.nextPacket) - int(r[0]))
-		if s >= len(g.packets) {
+		s := psLen - (nextPacket - int(r[0]))
+		if s >= psLen {
 			continue
 		}
-		e := len(g.packets) - (int(g.nextPacket) - int(r[1]))
+		e := psLen - (nextPacket - int(r[1]))
 		if e < 0 {
 			continue
 		}
-		clear(g.packets[max(s, 0):min(e+1, len(g.packets))])
+		clear(g.packets[max(s, 0):min(e+1, psLen)])
 	}
 	g.sendedMu.RUnlock()
+}
+
+func (g *group) incNextPacket() (nextPacket uint32) {
+	g.packetsMu.Lock()
+	defer g.packetsMu.Unlock()
+
+	g.packets = append(g.packets, nil)
+	nextPacket = g.nextPacket
+	g.nextPacket++
+	return nextPacket
 }
