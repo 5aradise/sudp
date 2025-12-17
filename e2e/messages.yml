@@ -1,0 +1,84 @@
+services:
+  sudp-server:
+    build:
+      context: ..
+      dockerfile: e2e/containers/echo-server/Dockerfile
+    container_name: sudp-server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      SERVER_ADDRESS: ":8080"
+
+      DELAY: ${NET_SERVER_DELAY:-10ms}
+      LOSS: ${NET_SERVER_LOSS:-0.1%}
+
+      CLIENTS_COUNT: ${CLIENTS_COUNT:-100}
+    command: ["/netem.sh", "/app/cmd"]
+    networks:
+      - testnet
+
+  tcp-server:
+    build:
+      context: ..
+      dockerfile: e2e/containers/echo-server-tcp/Dockerfile
+    container_name: tcp-server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      SERVER_ADDRESS: ":8081"
+
+      DELAY: ${NET_SERVER_DELAY:-10ms}
+      LOSS: ${NET_SERVER_LOSS:-0.1%}
+
+      CLIENTS_COUNT: ${CLIENTS_COUNT:-100}
+    command: ["/netem.sh", "/app/cmd"]
+    networks:
+      - testnet
+
+  sudp-client:
+    build:
+      context: ..
+      dockerfile: e2e/containers/messages/Dockerfile
+    depends_on:
+      - sudp-server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      SERVER_ADDRESS: "sudp-server:8080"
+
+      DELAY: ${NET_CLIENT_DELAY:-10ms}
+      LOSS: ${NET_CLIENT_LOSS:-0.1%}
+
+      REQUEST_SIZE: ${REQUEST_SIZE:-100}
+      REQUEST_COUNT: ${REQUEST_COUNT:-100}
+    command: ["/netem.sh", "/app/cmd"]
+    networks:
+      - testnet
+    deploy:
+      replicas: ${CLIENTS_COUNT:-100}
+
+  tcp-client:
+    build:
+      context: ..
+      dockerfile: e2e/containers/messages-tcp/Dockerfile
+    depends_on:
+      - tcp-server
+    cap_add:
+      - NET_ADMIN
+    environment:
+      SERVER_ADDRESS: "tcp-server:8081"
+
+      DELAY: ${NET_CLIENT_DELAY:-10ms}
+      LOSS: ${NET_CLIENT_LOSS:-0.1%}
+
+      REQUEST_SIZE: ${REQUEST_SIZE:-100}
+      REQUEST_COUNT: ${REQUEST_COUNT:-100}
+    command: ["/netem.sh", "/app/cmd"]
+    networks:
+      - testnet
+    deploy:
+      replicas: ${CLIENTS_COUNT:-100}
+
+networks:
+  testnet:
+    driver: bridge

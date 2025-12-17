@@ -6,47 +6,52 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/5aradise/sudp"
+
+	e2e "github.com/5aradise/sudp/e2e/containers"
 )
 
 func main() {
-	addr, ok := os.LookupEnv("SERVER_ADDRESS")
-	if !ok {
-		panic("SERVER_ADDRESS is not set")
-	}
+	saddr, _, _ := e2e.ClientConfig()
 
 	cl := &http.Client{
 		Transport: SudpDefaultTransport,
 	}
 
-	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/Van", strings.NewReader("My name is Van"))
+	req, err := http.NewRequest(http.MethodPost,
+		"http://"+saddr+"/users/5aradise",
+		strings.NewReader("Creator of sudp"))
 	if err != nil {
-		log.Println("new request error:", err)
-		return
+		log.Fatalln("new request error:", err)
 	}
 	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("Age", "20")
+	req.Header.Set("Age", "19")
 
 	res, err := cl.Do(req)
 	if err != nil {
-		log.Println("request error:", err)
-		return
+		log.Fatalln("request error:", err)
 	}
 	defer res.Body.Close()
 
-	resData, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Println("read error:", err)
-		return
+	if res.StatusCode != http.StatusCreated {
+		log.Fatalln("unexpected status code:", res.StatusCode)
 	}
 
-	log.Println("received:\n", string(resData))
+	resData, err := io.ReadAll(res.Body)
+	if err != nil {
+		log.Fatalln("read error:", err)
+	}
+	if string(resData) != "Name: 5aradise\nAge: 19\nDescription: Creator of sudp" {
+		log.Fatalln("unexpected response:", string(resData))
+	}
+
+	log.Println("success")
 }
 
+// default tcp transport from stdlib but with sudp dialer
 var SudpDefaultTransport http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {

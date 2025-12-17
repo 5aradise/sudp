@@ -69,6 +69,7 @@ func (l *listener) listen() {
 		if err != nil {
 			l.rerr.Store(fmt.Errorf("failed to read from main connection: %w", err))
 			l.newConnsClosed.Store(true)
+			close(l.newConns)
 
 			*readErr = err
 			l.connsMu.Lock()

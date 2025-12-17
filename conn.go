@@ -32,10 +32,10 @@ var (
 // so there is no need to notify the other direction)
 
 // Packet number tracking:
-// The problem is that our protocol does not need to track the numbers of received and 
-// sent packets at least for now, because they do not need to be resent and checked for delivery. 
-// Moreover, when they are present, if the number of a packet is missing, 
-// we cannot read the next received packets, because we cannot be sure that the packet 
+// The problem is that our protocol does not need to track the numbers of received and
+// sent packets at least for now, because they do not need to be resent and checked for delivery.
+// Moreover, when they are present, if the number of a packet is missing,
+// we cannot read the next received packets, because we cannot be sure that the packet
 // that was not received is a letter of received packets.
 type conn struct {
 	out struct {

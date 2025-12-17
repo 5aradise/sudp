@@ -2,14 +2,18 @@ package main
 
 import (
 	"errors"
+	"io"
 	"log"
-	"math"
 	"net"
-	"os"
-	"strconv"
 	"sync"
 
 	"github.com/5aradise/sudp"
+
+	e2e "github.com/5aradise/sudp/e2e/containers"
+)
+
+const (
+	bufSize = 4096
 )
 
 var (
@@ -19,21 +23,9 @@ var (
 )
 
 func main() {
-	saddr, ok := os.LookupEnv("SERVER_ADDRESS")
-	if !ok {
-		panic("SERVER_ADDRESS is not set")
-	}
-	clients := math.MaxInt
-	sclients, ok := os.LookupEnv("CLIENTS_COUNT")
-	if ok {
-		var err error
-		clients, err = strconv.Atoi(sclients)
-		if err != nil {
-			panic(err)
-		}
-	}
+	addr, clientCount := e2e.ServerConfig()
 
-	ln, err := sudp.Listen("udp", saddr)
+	ln, err := sudp.Listen("udp", addr)
 	if err != nil {
 		log.Fatalf("listen error: %v", err)
 	}
@@ -42,24 +34,20 @@ func main() {
 		if err != nil {
 			log.Fatalln("close listener error:", err)
 		}
+
+		log.Println("listner closed")
 	}()
 
-	log.Println("TCP server listening on", ln.Addr())
+	log.Println("server listening on", ln.Addr())
 
-	var connected int
-	for {
+	for range clientCount {
 		conn, err := ln.Accept()
 		if err != nil {
 			log.Fatalln("accept error:", err)
 			return
 		}
-		connected++
 
 		wg.Go(func() { handleConn(conn) })
-
-		if connected == clients {
-			break
-		}
 	}
 
 	wg.Wait()
@@ -81,31 +69,35 @@ func handleConn(conn net.Conn) {
 		err := conn.Close()
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			connErrsMu.Lock()
-			connErrs = append(connErrs, "close connection: "+err.Error())
+			connErrs = append(connErrs, "close: "+err.Error())
 			connErrsMu.Unlock()
 		}
+
+		log.Println("client disconnected:", addr)
 	}()
 
 	log.Println("client connected:", addr)
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, bufSize)
 	for {
 		n, err := conn.Read(buf)
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			connErrsMu.Lock()
-			connErrs = append(connErrs, "read: "+err.Error())
-			connErrsMu.Unlock()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
+				connErrsMu.Lock()
+				connErrs = append(connErrs, "read: "+err.Error())
+				connErrsMu.Unlock()
+			}
 			break
 		}
 
 		_, err = conn.Write(buf[:n])
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			connErrsMu.Lock()
-			connErrs = append(connErrs, "write: "+err.Error())
-			connErrsMu.Unlock()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				connErrsMu.Lock()
+				connErrs = append(connErrs, "read: "+err.Error())
+				connErrsMu.Unlock()
+			}
 			break
 		}
 	}
-
-	log.Println("client disconnected:", addr)
 }
