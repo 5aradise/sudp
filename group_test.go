@@ -81,7 +81,8 @@ func TestGroup_Timers(t *testing.T) {
 		ok, _, _ = g.appendAndSend([]byte("smth"))
 		assert.False(ok, "should be closed for new messages after short timer")
 
-		time.Sleep(time.Millisecond)
+		time.Sleep(deliveryDelay / 2)
+
 		sendedMu.Lock()
 		*sended = []rng[uint32]{{33, 38}}
 		sendedMu.Unlock()
@@ -106,46 +107,46 @@ func TestGroup_Timers(t *testing.T) {
 		assert.EqualValues(38, packets[8].number)
 	})
 
-	t.Run("Should resend packets adter long timer if something is not received and new data in small window", func(t *testing.T) {
+	t.Run("Should resend packets after long timer if something is not received and new data in small window", func(t *testing.T) {
 		assert := assert.New(t)
 		ps := &testPacketBuffer{
 			t: t,
 		}
 		sendedMu := &sync.RWMutex{}
-		sended := &[]rng[uint32]{{33, 34}, {37, 37}, {39, 40}}
+		sended := &[]rng[uint32]{{33, 34}, {37, 37}, {39, 100}}
+		smallWindow := sShortTime / 2
+		smallWindowPackets := int(sLongTime / smallWindow)
+		restToTime := sLongTime - smallWindow*time.Duration(smallWindowPackets)
 		g := newGroup(ps, func() {}, make(chan struct{}), sendedMu, sended, 33)
 
-		for i := range 8 {
+		for i := range smallWindowPackets {
 			ok, _, err := g.appendAndSend([]byte{byte(i)})
 			assert.True(ok)
 			assert.NoError(err)
 
-			time.Sleep(sLongTime / 8)
+			time.Sleep(smallWindow)
 		}
+		time.Sleep(restToTime)
+
+		time.Sleep(deliveryDelay / 2)
 
 		ok, _, _ := g.appendAndSend([]byte("smth"))
 		assert.False(ok, "should be closed for new messages after long timer")
 
-		time.Sleep(time.Millisecond)
 		sendedMu.Lock()
-		*sended = []rng[uint32]{{33, 40}}
+		*sended = []rng[uint32]{{33, 100}}
 		sendedMu.Unlock()
 
 		packets := ps.Packets()
 		// sended packets shuld be [33, 34, 35, 36, 37, 38, 39, 40, (35, 36, 38) - it was not in sended]
-		assert.Len(packets, 11)
-		assert.EqualValues(33, packets[0].number)
-		assert.EqualValues(34, packets[1].number)
-		assert.EqualValues(35, packets[2].number)
-		assert.EqualValues(36, packets[3].number)
-		assert.EqualValues(37, packets[4].number)
-		assert.EqualValues(38, packets[5].number)
-		assert.EqualValues(39, packets[6].number)
-		assert.EqualValues(40, packets[7].number)
+		assert.Len(packets, smallWindowPackets+3)
+		for i := range smallWindowPackets {
+			assert.EqualValues(33+i, packets[i].number)
+		}
 
-		assert.EqualValues(35, packets[8].number)
-		assert.EqualValues(36, packets[9].number)
-		assert.EqualValues(38, packets[10].number)
+		assert.EqualValues(35, packets[smallWindowPackets].number)
+		assert.EqualValues(36, packets[smallWindowPackets+1].number)
+		assert.EqualValues(38, packets[smallWindowPackets+2].number)
 	})
 }
 
@@ -171,7 +172,9 @@ func TestGroup_Resending(t *testing.T) {
 		assert.True(ok)
 		assert.NoError(err)
 
-		time.Sleep(sShortTime * 9)
+		time.Sleep(sShortTime * 10)
+
+		time.Sleep(deliveryDelay / 2)
 
 		packets := ps.Packets()
 		// sended packets shuld be [33, 34, 35, 36, (33, 36, 33, 36, 33, 36) - it was not in sended]
@@ -183,8 +186,10 @@ func TestGroup_Resending(t *testing.T) {
 
 		assert.EqualValues(33, packets[4].number)
 		assert.EqualValues(36, packets[5].number)
+
 		assert.EqualValues(33, packets[6].number)
 		assert.EqualValues(36, packets[7].number)
+
 		assert.EqualValues(33, packets[8].number)
 		assert.EqualValues(36, packets[9].number)
 	})
@@ -213,7 +218,11 @@ func TestGroup_Resending(t *testing.T) {
 		assert.True(ok)
 		assert.NoError(err)
 
-		time.Sleep(sShortTime * 18)
+		time.Sleep(sShortTime * 10)
+
+		time.Sleep(sShortTime * 10)
+
+		time.Sleep(deliveryDelay / 2)
 
 		assert.True(closedConn.Load())
 	})
@@ -242,13 +251,15 @@ func TestGroup_Resending(t *testing.T) {
 		assert.True(ok)
 		assert.NoError(err)
 
-		time.Sleep(sShortTime * 9)
+		time.Sleep(sShortTime * 10)
 
 		sendedMu.Lock()
 		*sended = []rng[uint32]{{33, 46}}
 		sendedMu.Unlock()
 
-		time.Sleep(sShortTime * 9)
+		time.Sleep(sShortTime * 10)
+
+		time.Sleep(deliveryDelay / 2)
 
 		assert.Len(ps.Packets(), 10)
 		assert.False(closedConn.Load())
@@ -284,7 +295,9 @@ func TestGroup_IncNextPacket(t *testing.T) {
 		nextPacket = g.incNextPacket() // 38 (dont care)
 		assert.EqualValues(38, nextPacket)
 
-		time.Sleep(sShortTime * 2)
+		time.Sleep(sShortTime)
+
+		time.Sleep(deliveryDelay / 2)
 
 		assert.Len(ps.Packets(), 4)
 	})

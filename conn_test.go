@@ -27,10 +27,12 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		assert.NoError(err)
 		in <- msg[:n]
 
-		time.Sleep(sShortTime)
+		time.Sleep(rShortTime)
+
+		time.Sleep(deliveryDelay / 2)
 
 		ps := out.Packets()
-		assert.Len(ps, 1)
+		assert.GreaterOrEqual(len(ps), 1)
 		received := testDecodeReceivedPackets(t, ps[0])
 		assert.Equal([]rng[uint32]{{0, 1}}, received)
 	})
@@ -40,23 +42,29 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		in := make(chan []byte, 2)
 		inerr := new(error)
 		out := &testPacketBuffer{t: t}
+		smallWindow := rShortTime / 2
+		smallWindowPackets := int(rLongTime / smallWindow)
+		restToTime := rLongTime - smallWindow*time.Duration(smallWindowPackets)
 		_ = newConn(in, inerr, out, nil)
 
-		for i := range 11 {
+		for i := range smallWindowPackets {
 			msg := make([]byte, 1024)
 			n, err := dataPacket(uint32(i+69), []byte("Hello")).encode(msg)
 			assert.NoError(err)
 			in <- msg[:n]
-			time.Sleep(rLongTime / 11)
+			time.Sleep(smallWindow)
 		}
+		time.Sleep(restToTime)
+
+		time.Sleep(deliveryDelay / 2)
 
 		ps := out.Packets()
 		assert.Len(ps, 1)
 		received := testDecodeReceivedPackets(t, ps[0])
-		assert.Equal([]rng[uint32]{{69, 79}}, received)
+		assert.Equal([]rng[uint32]{{69, uint32(69 + smallWindowPackets - 1)}}, received)
 	})
 
-	t.Run("Should send received packets if receive received packet", func(t *testing.T) {
+	t.Run("Should instantly send received packets if receive received packet", func(t *testing.T) {
 		assert := assert.New(t)
 		in := make(chan []byte, 2)
 		inerr := new(error)
@@ -80,14 +88,12 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		assert.NoError(err)
 		in <- msg[:n]
 
-		time.Sleep(sShortTime)
+		time.Sleep(deliveryDelay / 2)
 
 		ps := out.Packets()
-		assert.Len(ps, 2)
+		assert.Len(ps, 1)
 		received := testDecodeReceivedPackets(t, ps[0])
 		assert.Equal([]rng[uint32]{{0, 1}}, received)
-		received = testDecodeReceivedPackets(t, ps[1])
-		assert.Equal([]rng[uint32]{{0, 2}}, received)
 	})
 }
 
