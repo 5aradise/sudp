@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-const newConnBufSize = 128
+// number of packets that listener may not handle before dropping
+const newConnsCap = 256
 
 func Listen(network, address string) (net.Listener, error) {
 	addr, err := net.ResolveUDPAddr(network, address)
@@ -24,7 +25,7 @@ func Listen(network, address string) (net.Listener, error) {
 
 	l := &listener{
 		src:      conn,
-		newConns: make(chan net.Conn, newConnBufSize),
+		newConns: make(chan net.Conn, newConnsCap),
 		conns:    make(map[netip.AddrPort]chan<- []byte),
 	}
 	go l.listen()
@@ -86,14 +87,17 @@ func (l *listener) listen() {
 		l.connsMu.RLock()
 		connCh, ok := l.conns[addr]
 		if !ok {
-			newCh := l.lockedNewConn(addr, readErr)
-			if newCh == nil {
+			newConnCh := l.lockedNewConn(addr, readErr)
+			if newConnCh == nil {
 				continue
 			}
 
-			connCh = newCh
+			connCh = newConnCh
 		}
-		connCh <- buf[:n]
+
+		if len(connCh) != cap(connCh) {
+			connCh <- buf[:n]
+		} // if buffer is full, drop packet
 		l.connsMu.RUnlock()
 	}
 }
@@ -140,17 +144,21 @@ func (l *listener) onConnCLose(addr netip.AddrPort) func() error {
 }
 
 func (l *listener) lockedNewConn(addr netip.AddrPort, readErr *error) chan<- []byte {
-	readCh := make(chan []byte, readConnChSize)
-
-	conn := newConn(readCh, readErr, connWriter{addr: addr, srv: l.src}, l.onConnCLose(addr))
-
 	if l.newConnsClosed.Load() {
 		close(l.newConns)
 		return nil
 	}
+
+	if len(l.newConns) == cap(l.newConns) {
+		return nil
+	} // if buffer is full, drop connection
+
+	readCh := make(chan []byte, connCap)
+
+	conn := newConn(readCh, readErr, connWriter{addr: addr, srv: l.src}, l.onConnCLose(addr))
+
 	l.conns[addr] = readCh
 	l.newConns <- &lconn{conn: conn, addr: addr}
-
 	return readCh
 }
 

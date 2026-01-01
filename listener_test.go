@@ -58,6 +58,34 @@ func TestListener_Accept(t *testing.T) {
 		assert.Equal(3, int(connCount.Load()))
 		wg.Wait()
 	})
+
+	t.Run("Should drop connections if newConns buffer is full", func(t *testing.T) {
+		assert := assert.New(t)
+		l, err := Listen("udp", "127.0.0.1:0")
+		assert.NoError(err)
+		var idleClients sync.WaitGroup
+
+		for range newConnsCap {
+			idleClients.Go(func() {
+				periodicalClientMsg(assert, l.Addr().String(), []byte{1, 2, 3}, 1, 0)
+			})
+		}
+		idleClients.Wait()
+
+		// all clients sended messages, so buffer should be full
+
+		conn, err := Dial("udp", l.Addr().String())
+		assert.NoError(err)
+		defer func() {
+			assert.NoError(conn.Close())
+		}()
+
+		_, err = conn.Write([]byte{1, 2, 3})
+		assert.NoError(err)
+
+		_, err = conn.Read(make([]byte, 1024))
+		assert.ErrorIs(err, net.ErrClosed)
+	})
 }
 
 func TestListener_Close(t *testing.T) {

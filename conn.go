@@ -10,8 +10,29 @@ import (
 	"time"
 )
 
+/*
+Since packets will be dropped when the buffer is full,
+it is important to calculate its optimal size.
+
+packet flow: ... -> conn  -> incompleteOrder -(if data)-> bufQueue -> user
+time:		 ... -> short -> instant                   -> long
+
+avg time for command: short
+avg time for data:    short + long
+
+buffering for cmd: 	connCap
+buffering for data: connCap + userCap
+
+connCap - shuld be small
+userCap - shuld be big
+*/
 const (
-	readConnChSize = 64
+	// number of packets that conn may not read before blocking
+	// (time for package to process)
+	connCap = 256
+	// number of packets that client may not read before blocking
+	// (time for client to process)
+	userCap = 4096
 
 	rShortTime = 300 * time.Millisecond
 	rLongTime  = 3 * time.Second
@@ -79,7 +100,7 @@ func newConn(in <-chan []byte, inerr *error, out io.Writer, onClose func() error
 		onClose = func() error { return nil }
 	}
 	c := &conn{
-		toRead: newBufQueue(),
+		toRead: newBufQueue(userCap),
 		out: struct {
 			r     <-chan []byte
 			rerr  *error
@@ -162,8 +183,9 @@ func (c *conn) run() error {
 				return err
 			}
 		}
+		cmdReceivedPackets := command == commandReceivedPackets
 
-		if command != commandReceivedPackets {
+		if !cmdReceivedPackets {
 			if !c.addToReceived(p.number) {
 				err := c.sendReceivedPackets()
 				if err != nil {
@@ -180,7 +202,7 @@ func (c *conn) run() error {
 			}
 		}
 
-		if command != commandReceivedPackets {
+		if !cmdReceivedPackets {
 			for toRead := range c.unreaded.append(p) {
 				c.toRead.write(toRead)
 			}

@@ -19,7 +19,7 @@ func Dial(network, address string) (net.Conn, error) {
 		return nil, fmt.Errorf("failed to dial: %w", err)
 	}
 
-	readCh := make(chan []byte, readConnChSize)
+	readCh := make(chan []byte, connCap)
 	readErr := new(error)
 	go readToCh(readCh, readErr, src)
 	conn := newConn(readCh, readErr, src, func() error {
@@ -69,6 +69,8 @@ func readToCh(dst chan []byte, dstErr *error, src io.Reader) {
 			close(dst)
 			return
 		}
-		dst <- buf[:n]
+		if len(dst) != cap(dst) {
+			dst <- buf[:n]
+		} // if buffer is full, drop packet
 	}
 }

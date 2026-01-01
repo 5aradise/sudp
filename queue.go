@@ -4,12 +4,16 @@ import (
 	"sync/atomic"
 )
 
-const bufQueueSize = 64
+const defaultQueueSize = 1024
 
 // newBufPacketReader returns buffered asyncronous bytes queue
-func newBufQueue() *bufQueue {
+func newBufQueue(size ...int) *bufQueue {
+	s := defaultQueueSize
+	if len(size) > 0 {
+		s = size[0]
+	}
 	return &bufQueue{
-		ch: make(chan []byte, bufQueueSize),
+		ch: make(chan []byte, s),
 	}
 }
 

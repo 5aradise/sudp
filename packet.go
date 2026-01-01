@@ -2,6 +2,7 @@ package sudp
 
 import (
 	"errors"
+	"fmt"
 )
 
 /*
@@ -221,4 +222,33 @@ func (h header) encode(dst []byte) {
 
 func (p packet) len() int {
 	return headerSize + len(p.data)
+}
+
+// for debugging
+
+func (p packet) String() string {
+	if !p.isCommand {
+		return fmt.Sprintf("{%s[%v]}", p.header, p.data)
+	}
+	tp, pl, err := commandPacketType(p)
+	if err != nil {
+		panic(err)
+	}
+	switch tp {
+	case commandCloseConn:
+		return fmt.Sprintf("{%s[CLOSE]}", p.header)
+	case commandReceivedPackets:
+		rngs, err := decodeReceivedPackets(pl)
+		if err != nil {
+			panic(err)
+		}
+		return fmt.Sprintf("{%s[RECEIVED:%v]}", p.header, rngs)
+	default:
+		panic("unknown command")
+	}
+}
+
+func (h header) String() string {
+	return fmt.Sprintf("{ver: %d, cmd: %t, num: %d}",
+		h.version, h.isCommand, h.number)
 }
