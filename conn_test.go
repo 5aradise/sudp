@@ -11,6 +11,35 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestConn_Write(t *testing.T) {
+	t.Run("Implementations must not retain parameter", func(t *testing.T) {
+		assert := assert.New(t)
+		in := make(chan reusable[[]byte], 2)
+		inerr := new(error)
+		out := &testPacketBuffer{t: t}
+		conn := newConn(in, inerr, out, nil)
+
+		msg := []byte{1, 2, 3, 4, 5}
+		_, err := conn.Write(msg)
+		assert.NoError(err)
+		copy(msg, []byte{7, 7, 7, 7, 7})
+		_, err = conn.Write(msg)
+		assert.NoError(err)
+
+		// wait for resend
+		time.Sleep(sShortTime)
+
+		time.Sleep(deliveryDelay / 2)
+
+		// if we rewrite first message conn will resend it 2 times
+		ps := out.Packets()
+		assert.Equal([]byte{1, 2, 3, 4, 5}, ps[0].data)
+		assert.Equal([]byte{7, 7, 7, 7, 7}, ps[1].data)
+		assert.Equal([]byte{1, 2, 3, 4, 5}, ps[2].data)
+		assert.Equal([]byte{7, 7, 7, 7, 7}, ps[3].data)
+	})
+}
+
 func TestConn_ReceivedPackets(t *testing.T) {
 	t.Run("Should send received packets after short timer if no new data in small window", func(t *testing.T) {
 		assert := assert.New(t)

@@ -35,7 +35,7 @@ type group struct {
 	sendedMu   *sync.RWMutex
 	sended     *[]rng[uint32]
 	packetsMu  sync.Mutex
-	packets    [][]byte // mark sent messages by setting them to nil
+	packets    []reusable[[]byte] // mark sent messages by setting them to nil
 	nextPacket uint32
 }
 
@@ -78,25 +78,29 @@ func (g *group) appendAndSend(data []byte) (ok bool, n int, err error) {
 		return false, 0, nil
 	}
 
+	// no need in copying data because it will be realocated
+
 	ps, nextPacket := dataIntoPackets(g.nextPacket, data)
 	g.packets = slices.Grow(g.packets, len(ps))
 	for _, p := range ps {
-		data := make([]byte, p.len())
-		packetSize, err := p.encode(data)
+		buf := getPacketBuf()
+		packetSize, err := p.encode(buf.data)
 		if err != nil { // should never happen
 			panic(err)
 		}
-		data = data[:packetSize]
+		buf.data = buf.data[:packetSize]
 
-		written, err := g.w.Write(data)
+		written, err := g.w.Write(buf.data)
 		if err != nil {
+			buf.free()
 			return true, 0, fmt.Errorf("failed to write to main connection: %w", err)
 		}
 		if written != packetSize {
+			buf.free()
 			return true, 0, ErrPacketCorrupted
 		}
 		n += len(p.data)
-		g.packets = append(g.packets, data)
+		g.packets = append(g.packets, buf)
 	}
 	g.nextPacket = nextPacket
 	return true, n, nil
@@ -119,6 +123,12 @@ func (g *group) longTFunc() {
 }
 
 func (g *group) resendUnconfirmed() {
+	defer func() {
+		g.packetsMu.Lock()
+		clearPackets(g.packets)
+		g.packetsMu.Unlock()
+	}()
+
 	resendDelay := sShortTime
 	for range resendTries {
 		select {
@@ -131,9 +141,9 @@ func (g *group) resendUnconfirmed() {
 		g.packetsMu.Lock()
 		g.markSended()
 		for _, p := range g.packets {
-			if p != nil {
+			if p.data != nil {
 				hasUnconfirmed = true
-				_, err := g.w.Write(p)
+				_, err := g.w.Write(p.data)
 				if err != nil {
 					g.packetsMu.Unlock()
 					return
@@ -152,7 +162,7 @@ func (g *group) resendUnconfirmed() {
 	g.packetsMu.Lock()
 	g.markSended()
 	for _, p := range g.packets {
-		if p != nil {
+		if p.data != nil {
 			g.packetsMu.Unlock()
 			g.closeConn()
 			return
@@ -176,16 +186,25 @@ func (g *group) markSended() {
 		if e < 0 {
 			continue
 		}
-		clear(g.packets[max(s, 0):min(e+1, psLen)])
+		clearPackets(g.packets[max(s, 0):min(e+1, psLen)])
 	}
 	g.sendedMu.RUnlock()
+}
+
+func clearPackets(ps []reusable[[]byte]) {
+	for i, p := range ps {
+		if p.data != nil {
+			p.free()
+			ps[i] = reusable[[]byte]{}
+		}
+	}
 }
 
 func (g *group) incNextPacket() (nextPacket uint32) {
 	g.packetsMu.Lock()
 	defer g.packetsMu.Unlock()
 
-	g.packets = append(g.packets, nil)
+	g.packets = append(g.packets, reusable[[]byte]{})
 	nextPacket = g.nextPacket
 	g.nextPacket++
 	return nextPacket

@@ -329,14 +329,14 @@ func (c *conn) sendPacketOutOfGroup(p packet) error {
 		return clErr.(error)
 	}
 
-	data := make([]byte, p.len()) // here
-	packetSize, err := p.encode(data)
+	data := getPacketBuf()
+	packetSize, err := p.encode(data.data)
 	if err != nil { // should never happen
 		panic(err)
 	}
-	data = data[:packetSize]
 
-	written, err := c.out.w.Write(data)
+	written, err := c.out.w.Write(data.data[:packetSize])
+	data.free()
 	if err != nil {
 		return fmt.Errorf("failed to write to main connection: %w", err)
 	}
