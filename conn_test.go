@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 func TestConn_ReceivedPackets(t *testing.T) {
 	t.Run("Should send received packets after short timer if no new data in small window", func(t *testing.T) {
 		assert := assert.New(t)
-		in := make(chan []byte, 2)
+		var freeCalls atomic.Uint64
+		in := make(chan reusable[[]byte], 2)
 		inerr := new(error)
 		out := &testPacketBuffer{t: t}
 		_ = newConn(in, inerr, out, nil)
@@ -21,11 +23,11 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		msg := make([]byte, 1024)
 		n, err := dataPacket(0, []byte("Hello")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 		msg = make([]byte, 1024)
 		n, err = dataPacket(1, []byte("World")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 
 		time.Sleep(rShortTime)
 
@@ -35,11 +37,13 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		assert.GreaterOrEqual(len(ps), 1)
 		received := testDecodeReceivedPackets(t, ps[0])
 		assert.Equal([]rng[uint32]{{0, 1}}, received)
+		assert.EqualValues(0, freeCalls.Load(), "should keep all packets")
 	})
 
 	t.Run("Should send received packets after long timer if new data in small window", func(t *testing.T) {
 		assert := assert.New(t)
-		in := make(chan []byte, 2)
+		var freeCalls atomic.Uint64
+		in := make(chan reusable[[]byte], 2)
 		inerr := new(error)
 		out := &testPacketBuffer{t: t}
 		smallWindow := rShortTime / 2
@@ -51,7 +55,7 @@ func TestConn_ReceivedPackets(t *testing.T) {
 			msg := make([]byte, 1024)
 			n, err := dataPacket(uint32(i+69), []byte("Hello")).encode(msg)
 			assert.NoError(err)
-			in <- msg[:n]
+			in <- newTestReusable(msg[:n], &freeCalls)
 			time.Sleep(smallWindow)
 		}
 		time.Sleep(restToTime)
@@ -62,11 +66,13 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		assert.GreaterOrEqual(len(ps), 1)
 		received := testDecodeReceivedPackets(t, ps[0])
 		assert.Equal([]rng[uint32]{{69, uint32(69 + smallWindowPackets - 1)}}, received)
+		assert.EqualValues(0, freeCalls.Load(), "should keep all packets")
 	})
 
 	t.Run("Should instantly send received packets if receive received packet", func(t *testing.T) {
 		assert := assert.New(t)
-		in := make(chan []byte, 2)
+		var freeCalls atomic.Uint64
+		in := make(chan reusable[[]byte], 2)
 		inerr := new(error)
 		out := &testPacketBuffer{t: t}
 		_ = newConn(in, inerr, out, nil)
@@ -74,19 +80,19 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		msg := make([]byte, 1024)
 		n, err := dataPacket(0, []byte("Hello")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 		msg = make([]byte, 1024)
 		n, err = dataPacket(1, []byte("World")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 		msg = make([]byte, 1024)
 		n, err = dataPacket(1, []byte("World")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 		msg = make([]byte, 1024)
 		n, err = dataPacket(2, []byte("World")).encode(msg)
 		assert.NoError(err)
-		in <- msg[:n]
+		in <- newTestReusable(msg[:n], &freeCalls)
 
 		time.Sleep(deliveryDelay / 2)
 
@@ -94,13 +100,14 @@ func TestConn_ReceivedPackets(t *testing.T) {
 		assert.GreaterOrEqual(len(ps), 1)
 		received := testDecodeReceivedPackets(t, ps[0])
 		assert.Equal([]rng[uint32]{{0, 1}}, received)
+		assert.EqualValues(1, freeCalls.Load(), "should free received packet")
 	})
 }
 
 func TestConn_Close(t *testing.T) {
 	t.Run("Error from close (internal event) should overwrite error from external event", func(t *testing.T) {
 		assert := assert.New(t)
-		in := make(chan []byte)
+		in := make(chan reusable[[]byte])
 		close(in)
 		inRawErr := errors.New("read err")
 		inerr := &inRawErr
@@ -120,7 +127,7 @@ func TestConn_Close(t *testing.T) {
 
 	t.Run("Out close call only once", func(t *testing.T) {
 		assert := assert.New(t)
-		in := make(chan []byte)
+		in := make(chan reusable[[]byte])
 		inerr := new(error)
 		out := bytes.NewBuffer(nil)
 		var outCloseCount int

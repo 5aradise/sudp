@@ -60,7 +60,7 @@ var (
 // that was not received is a letter of received packets.
 type conn struct {
 	out struct {
-		r    <-chan []byte
+		r    <-chan reusable[[]byte]
 		rerr *error // will be set after close r channel
 
 		w io.Writer
@@ -95,14 +95,14 @@ type conn struct {
 // then inerr should be specified the connection error value, and the channel should be closed
 // - if the connection is closed for an internal reason,
 // then nil should be sent through the channel, and rerr is not expected to be specified
-func newConn(in <-chan []byte, inerr *error, out io.Writer, onClose func() error) *conn {
+func newConn(in <-chan reusable[[]byte], inerr *error, out io.Writer, onClose func() error) *conn {
 	if onClose == nil {
 		onClose = func() error { return nil }
 	}
 	c := &conn{
 		toRead: newBufQueue(userCap),
 		out: struct {
-			r     <-chan []byte
+			r     <-chan reusable[[]byte]
 			rerr  *error
 			w     io.Writer
 			close func() error
@@ -165,28 +165,36 @@ func (c *conn) run() error {
 		if !internalErr { // external connection error
 			return fmt.Errorf("failed to read from main connection: %w", *c.out.rerr)
 		}
-		if data == nil { // internal connection closed
+		if data.data == nil { // internal connection closed
 			return nil
 		}
 
-		p, err := decodePacket(data)
+		pv, err := decodePacket(data.data)
 		if err != nil {
+			data.free()
 			return fmt.Errorf("invalid packet: %w", err)
 		}
+		p := reusable[packet]{
+			data: pv,
+			free: data.free,
+		}
+
 		var (
 			command command = -1
 			payload []byte
 		)
-		if p.isCommand {
-			command, payload, err = commandPacketType(p)
+		if p.data.isCommand {
+			command, payload, err = commandPacketType(p.data)
 			if err != nil {
+				p.free()
 				return err
 			}
 		}
 		cmdReceivedPackets := command == commandReceivedPackets
 
 		if !cmdReceivedPackets {
-			if !c.addToReceived(p.number) {
+			if !c.addToReceived(p.data.number) {
+				p.free()
 				err := c.sendReceivedPackets()
 				if err != nil {
 					return fmt.Errorf("failed to send received packets: %w", err)
@@ -195,9 +203,10 @@ func (c *conn) run() error {
 			}
 		}
 
-		if p.isCommand {
-			err := c.handleCommand(p.number, command, payload)
+		if p.data.isCommand {
+			err := c.handleCommand(p.data.number, command, payload)
 			if err != nil {
+				p.free()
 				return fmt.Errorf("failed to handle command: %w", err)
 			}
 		}
@@ -206,6 +215,8 @@ func (c *conn) run() error {
 			for toRead := range c.unreaded.append(p) {
 				c.toRead.write(toRead)
 			}
+		} else {
+			p.free()
 		}
 	}
 }
@@ -318,7 +329,7 @@ func (c *conn) sendPacketOutOfGroup(p packet) error {
 		return clErr.(error)
 	}
 
-	data := make([]byte, p.len())
+	data := make([]byte, p.len()) // here
 	packetSize, err := p.encode(data)
 	if err != nil { // should never happen
 		panic(err)

@@ -7,16 +7,16 @@ import (
 
 type incompleteOrder struct {
 	nextToRead uint32
-	incomplete []packet
+	incomplete []reusable[packet]
 }
 
-func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
-	if p.number != o.nextToRead {
+func (o *incompleteOrder) append(p reusable[packet]) (completed iter.Seq[reusable[[]byte]]) {
+	if p.data.number != o.nextToRead {
 		o.incomplete = binaryInsert(o.incomplete, p)
-		return func(yield func([]byte) bool) {}
+		return func(yield func(reusable[[]byte]) bool) {}
 	}
 
-	return func(yield func([]byte) bool) {
+	return func(yield func(reusable[[]byte]) bool) {
 		o.nextToRead++
 		if !yieldDataPacket(yield, p) {
 			return
@@ -24,7 +24,7 @@ func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
 
 		lri := -1 // last readed index
 		for i, p := range o.incomplete {
-			if p.number != o.nextToRead {
+			if p.data.number != o.nextToRead {
 				lri = i - 1
 				break
 			}
@@ -40,15 +40,19 @@ func (o *incompleteOrder) append(p packet) (completed iter.Seq[[]byte]) {
 	}
 }
 
-func yieldDataPacket(yield func([]byte) bool, p packet) bool {
-	if p.isCommand {
+func yieldDataPacket(yield func(reusable[[]byte]) bool, p reusable[packet]) bool {
+	if p.data.isCommand {
+		p.free()
 		return true
 	}
 
-	return yield(p.data)
+	return yield(reusable[[]byte]{
+		data: p.data.data,
+		free: p.free,
+	})
 }
 
-func binaryInsert(ps []packet, p packet) []packet {
-	i, _ := slices.BinarySearchFunc(ps, p, func(a, b packet) int { return int(a.number) - int(b.number) })
+func binaryInsert(ps []reusable[packet], p reusable[packet]) []reusable[packet] {
+	i, _ := slices.BinarySearchFunc(ps, p, func(a, b reusable[packet]) int { return int(a.data.number) - int(b.data.number) })
 	return slices.Insert(ps, i, p)
 }

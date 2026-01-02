@@ -26,7 +26,7 @@ func Listen(network, address string) (net.Listener, error) {
 	l := &listener{
 		src:      conn,
 		newConns: make(chan net.Conn, newConnsCap),
-		conns:    make(map[netip.AddrPort]chan<- []byte),
+		conns:    make(map[netip.AddrPort]chan<- reusable[[]byte]),
 	}
 	go l.listen()
 	return l, nil
@@ -38,7 +38,7 @@ type listener struct {
 	newConnsClosed atomic.Bool
 	newConns       chan net.Conn
 	connsMu        sync.RWMutex
-	conns          map[netip.AddrPort]chan<- []byte
+	conns          map[netip.AddrPort]chan<- reusable[[]byte]
 }
 
 func (l *listener) Accept() (net.Conn, error) {
@@ -65,9 +65,10 @@ func (l *listener) Addr() net.Addr {
 func (l *listener) listen() {
 	readErr := new(error)
 	for {
-		buf := make([]byte, maxPacketSize)
-		n, addr, err := l.src.ReadFromUDPAddrPort(buf)
+		buf := getPacketBuf()
+		n, addr, err := l.src.ReadFromUDPAddrPort(buf.data)
 		if err != nil {
+			buf.free()
 			l.rerr.Store(fmt.Errorf("failed to read from main connection: %w", err))
 			l.newConnsClosed.Store(true)
 			close(l.newConns)
@@ -89,6 +90,7 @@ func (l *listener) listen() {
 		if !ok {
 			newConnCh := l.lockedNewConn(addr, readErr)
 			if newConnCh == nil {
+				buf.free()
 				continue
 			}
 
@@ -96,8 +98,11 @@ func (l *listener) listen() {
 		}
 
 		if len(connCh) != cap(connCh) {
-			connCh <- buf[:n]
-		} // if buffer is full, drop packet
+			buf.data = buf.data[:n]
+			connCh <- buf
+		} else { // if buffer is full, drop packet
+			buf.free()
+		}
 		l.connsMu.RUnlock()
 	}
 }
@@ -136,14 +141,14 @@ func (w connWriter) Write(b []byte) (int, error) {
 func (l *listener) onConnCLose(addr netip.AddrPort) func() error {
 	return func() error {
 		l.connsMu.Lock()
-		l.conns[addr] <- nil
+		l.conns[addr] <- reusable[[]byte]{}
 		delete(l.conns, addr)
 		l.connsMu.Unlock()
 		return l.tryCloseSrc()
 	}
 }
 
-func (l *listener) lockedNewConn(addr netip.AddrPort, readErr *error) chan<- []byte {
+func (l *listener) lockedNewConn(addr netip.AddrPort, readErr *error) chan<- reusable[[]byte] {
 	if l.newConnsClosed.Load() {
 		close(l.newConns)
 		return nil
@@ -153,7 +158,7 @@ func (l *listener) lockedNewConn(addr netip.AddrPort, readErr *error) chan<- []b
 		return nil
 	} // if buffer is full, drop connection
 
-	readCh := make(chan []byte, connCap)
+	readCh := make(chan reusable[[]byte], connCap)
 
 	conn := newConn(readCh, readErr, connWriter{addr: addr, srv: l.src}, l.onConnCLose(addr))
 

@@ -19,11 +19,11 @@ func Dial(network, address string) (net.Conn, error) {
 		return nil, fmt.Errorf("failed to dial: %w", err)
 	}
 
-	readCh := make(chan []byte, connCap)
+	readCh := make(chan reusable[[]byte], connCap)
 	readErr := new(error)
 	go readToCh(readCh, readErr, src)
 	conn := newConn(readCh, readErr, src, func() error {
-		readCh <- nil
+		readCh <- reusable[[]byte]{}
 		return src.Close()
 	})
 	return &dconn{
@@ -60,17 +60,21 @@ func (c *dconn) SetWriteDeadline(t time.Time) error {
 	return fmt.Errorf("%w: temporarily not implemented", errors.ErrUnsupported)
 }
 
-func readToCh(dst chan []byte, dstErr *error, src io.Reader) {
+func readToCh(dst chan reusable[[]byte], dstErr *error, src io.Reader) {
 	for {
-		buf := make([]byte, maxPacketSize)
-		n, rerr := src.Read(buf)
+		buf := getPacketBuf()
+		n, rerr := src.Read(buf.data)
 		if rerr != nil {
+			buf.free()
 			*dstErr = rerr
 			close(dst)
 			return
 		}
 		if len(dst) != cap(dst) {
-			dst <- buf[:n]
-		} // if buffer is full, drop packet
+			buf.data = buf.data[:n]
+			dst <- buf
+		} else { // if buffer is full, drop packet
+			buf.free()
+		}
 	}
 }

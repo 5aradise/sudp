@@ -13,39 +13,46 @@ func newBufQueue(size ...int) *bufQueue {
 		s = size[0]
 	}
 	return &bufQueue{
-		ch: make(chan []byte, s),
+		ch: make(chan reusable[[]byte], s),
 	}
 }
 
 type bufQueue struct {
-	ch  chan []byte
+	ch  chan reusable[[]byte]
 	err atomic.Value // to stop reading error should be set and channel closed
-	buf []byte
+	buf reusable[[]byte]
 }
 
 // asyncronous [io.Reader] implementation, returns error from [bufQueue.close] call
 func (r *bufQueue) read(b []byte) (int, error) {
-	var data []byte
-	if len(r.buf) != 0 {
-		data = r.buf
-	} else {
+	data := r.buf
+	if len(data.data) == 0 {
 		data = <-r.ch // block reading if no buffered data
 	}
-	copied := copy(b, data)
+	copied := copy(b, data.data)
 	n := copied
 
 	for n < len(b) && len(r.ch) > 0 {
+		data.free()
 		data = <-r.ch
-		copied = copy(b[n:], data)
+		copied = copy(b[n:], data.data)
 		n += copied
 	}
 
-	r.buf = data[copied:]
+	if len(data.data[copied:]) > 0 {
+		data = reusable[[]byte]{data.data[copied:], data.free}
+	} else {
+		if data.free != nil {
+			data.free()
+		}
+		data = reusable[[]byte]{}
+	}
+	r.buf = data
 	err, _ := r.err.Load().(error)
 	return n, err
 }
 
-func (r *bufQueue) write(p []byte) {
+func (r *bufQueue) write(p reusable[[]byte]) {
 	r.ch <- p
 }
 
